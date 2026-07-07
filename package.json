@@ -1,0 +1,6 @@
+{
+  "name": "ghost-content-board-automation",
+  "private": true,
+  "type": "module",
+  "description": "Scheduled generator for topic-board.html topics"
+}
