@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>鬼磕頭內容主題管理板</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: #0f0f12;
+    color: #e8e6e3;
+    padding: 20px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 22px;
+    margin-bottom: 4px;
+    color: #f0c987;
+  }
+  .subtitle {
+    color: #8a8680;
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+  .stats {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .stat-box {
+    background: #1a1a1f;
+    border: 1px solid #2a2a30;
+    border-radius: 8px;
+    padding: 10px 14px;
+    flex: 1;
+    min-width: 80px;
+    text-align: center;
+  }
+  .stat-num { font-size: 20px; font-weight: bold; color: #f0c987; }
+  .stat-label { font-size: 11px; color: #8a8680; margin-top: 2px; }
+
+  .filter-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .filter-btn {
+    background: #1a1a1f;
+    border: 1px solid #2a2a30;
+    color: #b0aca6;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .filter-btn.active {
+    background: #f0c987;
+    color: #0f0f12;
+    border-color: #f0c987;
+    font-weight: bold;
+  }
+
+  .card {
+    background: #1a1a1f;
+    border: 1px solid #2a2a30;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .card-title {
+    font-size: 15px;
+    font-weight: bold;
+    color: #fff;
+    flex: 1;
+  }
+  .badge {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 12px;
+    white-space: nowrap;
+    font-weight: bold;
+  }
+  .badge-explosive { background: #4a2020; color: #ff8a8a; }
+  .badge-trust { background: #1e3a2e; color: #8affb0; }
+  .badge-crossover { background: #2e2a4a; color: #b0a8ff; }
+
+  .status-select {
+    background: #0f0f12;
+    border: 1px solid #3a3a40;
+    color: #e8e6e3;
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    margin-top: 8px;
+  }
+
+  .card-section {
+    margin-top: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .card-label {
+    color: #8a8680;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 3px;
+  }
+  .card-text { color: #d0cdc8; }
+  .tag-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .tag {
+    font-size: 10px;
+    background: #26262c;
+    color: #a8a49e;
+    padding: 3px 8px;
+    border-radius: 6px;
+  }
+
+  .expand-btn {
+    background: none;
+    border: none;
+    color: #f0c987;
+    font-size: 12px;
+    cursor: pointer;
+    margin-top: 10px;
+    padding: 0;
+  }
+  .script-box {
+    display: none;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #3a3a40;
+  }
+  .script-box.show { display: block; }
+  .script-item { margin-bottom: 8px; }
+  .script-q { color: #f0c987; font-size: 12px; font-weight: bold; }
+  .script-a { color: #c8c4bf; font-size: 12px; margin-top: 2px; }
+
+  .empty-state {
+    text-align: center;
+    color: #6a6660;
+    padding: 40px 20px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<h1>🔮 鬼磕頭內容主題管理板</h1>
+<div class="subtitle">研究驅動的內容主題庫，不追熱點、追長效好奇心</div>
+
+<div class="stats" id="statsRow"></div>
+
+<div class="filter-bar" id="filterBar"></div>
+
+<div id="cardList"></div>
+
+<script>
+const topics = [
+  {
+    id: 1,
+    title: "拍肩膀真的會招陰嗎？",
+    type: "explosive",
+    typeLabel: "爆發型",
+    why: "台灣從小到大流傳的禁忌，幾乎人人聽過但沒人真正問過為什麼。這類「大家都信但沒人解釋」的題目，天生自帶討論欲望。",
+    angle: "不要正面回答是或不是，而是解釋「拍肩膀」這個動作在靈性上真正的機制是什麼，再給一個明確的態度立場。鐵口直斷的風格在這裡最適合發揮。",
+    tags: ["長青主題", "民俗禁忌", "低製作成本"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "從小到大大家都說拍肩膀會招陰，你怎麼看這個說法？" },
+      { q: "追問方向1", a: "如果真的有影響，機制是什麼？跟三把火的說法有沒有關係？" },
+      { q: "追問方向2", a: "有沒有實際案例是因為這樣出事的？" },
+      { q: "收尾引導", a: "那一般人平常要注意什麼，或什麼情況下不用擔心？" }
+    ]
+  },
+  {
+    id: 2,
+    title: "拜拜求財為什麼很多人拜完還是沒效？",
+    type: "trust",
+    typeLabel: "信任型",
+    why: "搜尋和社群數據都顯示每年年初到年中，招財開運內容討論度極高，尤其2026丙午年被稱為財運變動年，大眾對招財話題的關注度比平常更高。",
+    angle: "從他的專業角度指出一般拜拜跟他的招財服務的本質差異——不是拜的方式不對，而是問題根源沒被處理。這支影片可以自然帶出服務差異化。",
+    tags: ["高轉換意圖", "主打服務", "招財"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "很多人拜拜求財，拜完還是沒起色，你怎麼看這個現象？" },
+      { q: "追問方向1", a: "問題通常出在哪裡？是拜的方式、時間，還是別的？" },
+      { q: "追問方向2", a: "你自己怎麼判斷一個人財運卡住的真正原因？" },
+      { q: "收尾引導", a: "如果一般拜拜沒用，那怎樣才算真正處理到問題？" }
+    ]
+  },
+  {
+    id: 3,
+    title: "住飯店沖廁所，這個習慣有沒有用？",
+    type: "explosive",
+    typeLabel: "爆發型",
+    why: "台灣人普遍的旅行習慣，幾乎人人做過但沒真正想過為什麼。這類生活化的靈性習慣題目，轉發分享率通常很高，因為每個人都能對號入座。",
+    angle: "用一個大家都做過的動作，講出背後真正有沒有道理，順勢帶出「靈性防護」跟「儀式感安慰」的差別，建立他解釋事情的專業感。",
+    tags: ["長青主題", "生活習慣", "高共鳴"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "住飯店大家第一件事沖廁所，這個習慣你怎麼看？" },
+      { q: "追問方向1", a: "這個動作背後的邏輯是什麼？真的有效果嗎？" },
+      { q: "追問方向2", a: "那如果真的住到不乾淨的房間，正確的處理方式是什麼？" },
+      { q: "收尾引導", a: "一般人出門在外，你會建議做什麼簡單的防護？" }
+    ]
+  },
+  {
+    id: 4,
+    title: "收驚到底在收什麼？",
+    type: "explosive",
+    typeLabel: "爆發型",
+    why: "從小做到大的習俗，但幾乎沒人真正理解機制。這類「熟悉但不懂」的主題，是建立專業解釋權威感最好的切角，且不受任何時間點限制。",
+    angle: "用他的天賦加傳承角度，解釋收驚背後真正處理的是什麼狀態，是收魂魄、收驚嚇能量，還是別的。這支適合放在信任建立軸線的基礎教育內容。",
+    tags: ["長青主題", "專業科普", "基礎教育"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "收驚這件事很多人小時候都被帶去收過，但你知道實際在收什麼嗎？" },
+      { q: "追問方向1", a: "從你的角度看，一個人為什麼會需要收驚？" },
+      { q: "追問方向2", a: "收驚跟你做的其他靈性服務，機制上有什麼不同？" },
+      { q: "收尾引導", a: "什麼樣的狀況，你會建議直接來找你而不是一般收驚？" }
+    ]
+  },
+  {
+    id: 5,
+    title: "2026丙午年財運變動大，卡到陰跟財運卡關有關係嗎？",
+    type: "trust",
+    typeLabel: "信任型",
+    why: "命理媒體大量報導2026丙午年是「火能量特別強」的變動年份，多篇文章都在討論今年運勢不穩定、財運洗牌。這是目前搜尋量最大的命理話題之一，且效期長達全年。",
+    angle: "從靈性角度回應這個全年都在被討論的話題——當大家都在說「今年變動大」的時候，鬼磕頭可以提供一個不同視角：變動的根源可能不只是流年，也可能是靈性上的干擾。",
+    tags: ["當年度話題", "全年效期", "高搜尋量"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "今年很多人說丙午年變動特別大，財運不穩，你從靈性角度怎麼看？" },
+      { q: "追問方向1", a: "怎麼分辨是流年本來的變動，還是有靈性上的問題卡住？" },
+      { q: "追問方向2", a: "你今年接的案子裡，有沒有跟這個流年主題相關的？" },
+      { q: "收尾引導", a: "遇到今年特別不順的人，你會建議先做什麼？" }
+    ]
+  },
+  {
+    id: 6,
+    title: "招財水晶、五帝錢真的有用嗎？",
+    type: "explosive",
+    typeLabel: "爆發型",
+    why: "招財小物在電商和社群的討論量非常高，從水晶、貔貅到五帝錢都是熱搜商品，代表大眾對「花小錢招財」有強烈需求，但也是最容易被他用專業角度打破的主題。",
+    angle: "這是最適合「哪些有用哪些是迷信」切角的題目。他可以誠實點名哪些小物真的有效、哪些只是安慰劑，這種反差感最容易引發討論和分享。",
+    tags: ["高討論度", "反差感", "迷信破解"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "現在很多人買招財水晶、五帝錢，這些東西真的有用嗎？" },
+      { q: "追問方向1", a: "從你的角度，這些物品的作用機制是什麼，還是只是心理安慰？" },
+      { q: "追問方向2", a: "有沒有哪個招財小物你覺得特別沒用，或特別有效？" },
+      { q: "收尾引導", a: "如果真的想招財，比起買小物，更根本該做的是什麼？" }
+    ]
+  },
+  {
+    id: 7,
+    title: "感覺被跟、被卡到，怎麼判斷是真的還是心理作用？",
+    type: "trust",
+    typeLabel: "信任型",
+    why: "靈異版上這類「自我懷疑」的貼文討論度高，很多人有相關經驗但不確定是不是自己嚇自己，這是典型的痛點型主題，直接連結到他的核心服務。",
+    angle: "他可以分享判斷的邏輯——不是每個不舒服都是靈異問題，這種誠實的態度反而比誇大更有說服力，同時也篩選出真正需要服務的人。",
+    tags: ["長青主題", "痛點直擊", "服務導流"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "很多人覺得自己被跟、被卡到，但不確定是真的還是自己嚇自己，你怎麼判斷？" },
+      { q: "追問方向1", a: "有沒有一些具體的徵兆是你會特別注意的？" },
+      { q: "追問方向2", a: "如果只是心理作用，你會怎麼跟對方說明？" },
+      { q: "收尾引導", a: "真的遇到這種狀況，第一步應該怎麼做？" }
+    ]
+  },
+  {
+    id: 8,
+    title: "代書遇到凶宅、遺產糾紛，法律解決不了的部分怎麼辦？",
+    type: "crossover",
+    typeLabel: "身份交叉",
+    why: "這是他最獨特的市場定位——代書加靈性雙重身份。節目上這個角度就已經證明有話題性，且完全不需要靠悲劇事件，是安全又差異化的切角。",
+    angle: "這支影片直接展現他的雙重專業，法律歸法律、靈性歸靈性，兩個角度同時處理同一個問題，這是市場上幾乎沒有人能做到的獨特定位。",
+    tags: ["獨特定位", "代書身份", "差異化強"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "你同時是代書又懂靈性，遇到凶宅或遺產糾紛，你怎麼同時用兩個角度處理？" },
+      { q: "追問方向1", a: "有沒有實際案例是法律上沒問題，但靈性上其實有狀況的？" },
+      { q: "追問方向2", a: "客戶通常是先發現哪個問題，才想到要找你的？" },
+      { q: "收尾引導", a: "如果有人正在處理類似糾紛，你會建議他們注意什麼？" }
+    ]
+  },
+  {
+    id: 9,
+    title: "鬼月十大禁忌大家都在講，但真正該注意的是這個",
+    type: "trust",
+    typeLabel: "信任型",
+    why: "鬼月2026年落在國曆8/13到9/10，現在7月初正是預熱期。市面上禁忌類文章已經非常多，是紅海题材，直接做同樣的十大禁忌很難突圍。",
+    angle: "不要重複做十大禁忌這種已經被講爛的內容，而是讓他站出來說這些禁忌裡哪些是真的要注意、哪些是以訛傳訛，用專業判斷做篩選，跟滿街的禁忌文章做出區隔。",
+    tags: ["鬼月預熱", "紅海突圍", "8月效期"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "網路上鬼月禁忌一大堆，你覺得哪些是真的該注意，哪些根本是以訛傳訛？" },
+      { q: "追問方向1", a: "從你的專業角度，最容易被誤解或誇大的禁忌是哪個？" },
+      { q: "追問方向2", a: "那真正該小心的是什麼，一般人反而沒注意到？" },
+      { q: "收尾引導", a: "如果今年鬼月真的遇到不對勁的狀況，第一步該怎麼辦？" }
+    ]
+  },
+  {
+    id: 10,
+    title: "普渡拜好兄弟，供品和流程搞錯會怎樣？",
+    type: "trust",
+    typeLabel: "信任型",
+    why: "中元普渡是鬼月最大的儀式活動，家家戶戶都會準備，但很多人其實不確定流程對不對、供品順序有沒有講究，這是每年都會重複出現的高需求主題。",
+    angle: "從他的專業角度指出一般人普渡常見的錯誤，同時自然帶出如果家裡狀況比較特殊，一般普渡可能不夠的服務需求。",
+    tags: ["鬼月核心", "高需求", "年度重複"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "中元普渡大家都會拜，但流程和供品順序，一般人最容易搞錯的是什麼？" },
+      { q: "追問方向1", a: "拜錯的話真的會有影響嗎，還是只是心意問題？" },
+      { q: "追問方向2", a: "什麼樣的狀況下，一般家庭自己普渡可能不夠，需要找專業處理？" },
+      { q: "收尾引導", a: "給大家一個簡單版的正確做法建議？" }
+    ]
+  },
+  {
+    id: 11,
+    title: "現在流行用AI算命、AI解籤，準嗎？",
+    type: "explosive",
+    typeLabel: "爆發型",
+    why: "Threads上目前正在瘋傳求籤配ChatGPT解籤、AI塔羅占卜等內容，討論量很高且是全新的趨勢話題，幾乎沒有靈性工作者正面評論過這個現象，是搶占話語權的好機會。",
+    angle: "這是最新鮮的切角，讓他用真正的靈性專業角度評論AI算命現象，是噱頭還是真的有參考價值，這種傳統派評論新科技的反差感容易引發討論轉發，也顯示他跟得上時事。",
+    tags: ["最新趨勢", "AI話題", "高話題性"],
+    status: "pending",
+    script: [
+      { q: "開場問題", a: "現在很多人求籤之後用ChatGPT解籤，你怎麼看這個現象？" },
+      { q: "追問方向1", a: "AI解籤跟真正的解籤，本質上差在哪裡？" },
+      { q: "追問方向2", a: "你覺得這樣做完全沒用，還是有部分參考價值？" },
+      { q: "收尾引導", a: "如果真的想知道答案，你會建議怎麼做比較準？" }
+    ]
+  }
+];
+
+let currentFilter = "all";
+let scriptShown = {};
+
+function render() {
+  const filtered = currentFilter === "all" ? topics : topics.filter(t => t.type === currentFilter);
+
+  // stats
+  const total = topics.length;
+  const pending = topics.filter(t => t.status === "pending").length;
+  const selected = topics.filter(t => t.status === "selected").length;
+  const shot = topics.filter(t => t.status === "shot").length;
+  const posted = topics.filter(t => t.status === "posted").length;
+
+  document.getElementById("statsRow").innerHTML = `
+    <div class="stat-box"><div class="stat-num">${total}</div><div class="stat-label">總主題數</div></div>
+    <div class="stat-box"><div class="stat-num">${pending}</div><div class="stat-label">待選</div></div>
+    <div class="stat-box"><div class="stat-num">${selected}</div><div class="stat-label">已選定</div></div>
+    <div class="stat-box"><div class="stat-num">${shot}</div><div class="stat-label">已拍攝</div></div>
+    <div class="stat-box"><div class="stat-num">${posted}</div><div class="stat-label">已發布</div></div>
+  `;
+
+  // filter bar
+  const filters = [
+    { key: "all", label: "全部" },
+    { key: "explosive", label: "爆發型" },
+    { key: "trust", label: "信任型" },
+    { key: "crossover", label: "身份交叉" }
+  ];
+  document.getElementById("filterBar").innerHTML = filters.map(f =>
+    `<button class="filter-btn ${currentFilter === f.key ? 'active' : ''}" onclick="setFilter('${f.key}')">${f.label}</button>`
+  ).join("");
+
+  // cards
+  if (filtered.length === 0) {
+    document.getElementById("cardList").innerHTML = `<div class="empty-state">這個分類目前沒有主題</div>`;
+    return;
+  }
+
+  document.getElementById("cardList").innerHTML = filtered.map(t => {
+    const badgeClass = t.type === "explosive" ? "badge-explosive" : t.type === "trust" ? "badge-trust" : "badge-crossover";
+    const isShown = scriptShown[t.id];
+    return `
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">${t.title}</div>
+        <span class="badge ${badgeClass}">${t.typeLabel}</span>
+      </div>
+
+      <div class="card-section">
+        <div class="card-label">為什麼現在熱</div>
+        <div class="card-text">${t.why}</div>
+      </div>
+
+      <div class="card-section">
+        <div class="card-label">建議切角</div>
+        <div class="card-text">${t.angle}</div>
+      </div>
+
+      <div class="tag-row">
+        ${t.tags.map(tag => `<span class="tag">${tag}</span>`).join("")}
+      </div>
+
+      <select class="status-select" onchange="updateStatus(${t.id}, this.value)">
+        <option value="pending" ${t.status === "pending" ? "selected" : ""}>待選</option>
+        <option value="selected" ${t.status === "selected" ? "selected" : ""}>已選定</option>
+        <option value="shot" ${t.status === "shot" ? "selected" : ""}>已拍攝</option>
+        <option value="posted" ${t.status === "posted" ? "selected" : ""}>已發布</option>
+      </select>
+
+      <button class="expand-btn" onclick="toggleScript(${t.id})">${isShown ? '收起訪談大綱 ▲' : '展開訪談大綱 ▼'}</button>
+
+      <div class="script-box ${isShown ? 'show' : ''}">
+        ${t.script.map(s => `
+          <div class="script-item">
+            <div class="script-q">${s.q}</div>
+            <div class="script-a">${s.a}</div>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+  }).join("");
+}
+
+function setFilter(key) {
+  currentFilter = key;
+  render();
+}
+
+function updateStatus(id, value) {
+  const t = topics.find(x => x.id === id);
+  if (t) t.status = value;
+  render();
+}
+
+function toggleScript(id) {
+  scriptShown[id] = !scriptShown[id];
+  render();
+}
+
+render();
+</script>
+
+</body>
+</html>
