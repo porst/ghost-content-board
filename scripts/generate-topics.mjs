@@ -174,7 +174,10 @@ async function generateTopics(client, existingTitles) {
 
 async function main() {
   const state = readState();
-  if (state.lastRunDate && daysSince(state.lastRunDate) < CYCLE_DAYS) {
+  // Manual workflow_dispatch runs always execute — the 21-day gate only
+  // throttles the scheduled cron trigger.
+  const isManualTrigger = process.env.GITHUB_EVENT_NAME === "workflow_dispatch";
+  if (!isManualTrigger && state.lastRunDate && daysSince(state.lastRunDate) < CYCLE_DAYS) {
     console.log(
       `Last run was ${daysSince(state.lastRunDate).toFixed(1)} days ago; waiting for the ${CYCLE_DAYS}-day cycle.`,
     );
