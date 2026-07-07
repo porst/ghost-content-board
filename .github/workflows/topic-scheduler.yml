@@ -1,0 +1,51 @@
+name: Topic Board Scheduler
+
+# GitHub Actions cron can't express "every 21 days" directly, so this runs
+# daily and scripts/generate-topics.mjs gates itself against
+# automation/state.json — it only actually calls the API and updates the
+# board once 21 days have passed since the last successful run.
+on:
+  schedule:
+    - cron: "0 1 * * *" # 01:00 UTC daily (≈09:00 Taipei time)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install @anthropic-ai/sdk@latest
+
+      - name: Generate topics
+        id: generate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/generate-topics.mjs
+
+      - name: Commit and push
+        if: steps.generate.outputs.generated == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add topic-board.html automation/state.json
+          git commit -m "Add ${{ steps.generate.outputs.count }} new content topics"
+          git push
+
+      - name: Notify LINE
+        if: steps.generate.outputs.generated == 'true'
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_TARGET_ID: ${{ secrets.LINE_TARGET_ID }}
+          TOPIC_COUNT: ${{ steps.generate.outputs.count }}
+        run: node scripts/notify-line.mjs
