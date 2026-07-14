@@ -6,16 +6,24 @@
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "node:fs";
 import path from "node:path";
+import { extractArrayBlock, replaceArrayBlock } from "../lib/board.mjs";
 
 const ROOT = process.cwd();
 const HTML_PATH = path.join(ROOT, "topic-board.html");
 const STATE_PATH = path.join(ROOT, "automation", "state.json");
 const CYCLE_DAYS = 21;
 
+// "commentary"（同業評論型）is a distinct research *source*, not just a
+// content angle: it comes from monitoring what other 宮廟/靈性工作者/KOL
+// publish on social platforms (e.g. IG), rather than from general public
+// discourse. Any future research-automation step that watches trend sources
+// (PTT/Dcard/Threads, etc.) should treat "monitor competitor/peer social
+// posts" as an equally first-class source feeding this type.
 const TYPE_LABELS = {
   explosive: "爆發型",
   trust: "信任型",
   crossover: "身份交叉",
+  commentary: "同業評論型",
 };
 
 function readState() {
@@ -38,49 +46,6 @@ function setOutput(name, value) {
   if (file) fs.appendFileSync(file, `${name}=${value}\n`);
 }
 
-// Extract the `const topics = [ ... ];` array literal from topic-board.html
-// via string-literal-aware bracket scanning. The file is our own trusted repo
-// content, so evaluating the extracted literal with `new Function` is safe
-// (it uses unquoted JS object-literal keys, not strict JSON).
-function extractTopicsBlock(html) {
-  const marker = "const topics = ";
-  const start = html.indexOf(marker);
-  if (start === -1) {
-    throw new Error("Could not find `const topics = ` in topic-board.html");
-  }
-  const arrayStart = start + marker.length;
-  let depth = 0;
-  let inString = null;
-  let i = arrayStart;
-  for (; i < html.length; i++) {
-    const ch = html[i];
-    if (inString) {
-      if (ch === "\\") {
-        i++;
-        continue;
-      }
-      if (ch === inString) inString = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      inString = ch;
-      continue;
-    }
-    if (ch === "[") depth++;
-    else if (ch === "]") {
-      depth--;
-      if (depth === 0) {
-        i++;
-        break;
-      }
-    }
-  }
-  const arrayText = html.slice(arrayStart, i);
-  const topics = new Function(`return (${arrayText});`)();
-  const semiIndex = html.indexOf(";", i);
-  return { topics, blockStart: start, blockEnd: semiIndex + 1 };
-}
-
 function buildPrompt(existingTitles) {
   const today = new Date().toISOString().slice(0, 10);
   const avoidList = existingTitles.length
@@ -89,13 +54,17 @@ function buildPrompt(existingTitles) {
 
   const system = `你是「鬼磕頭」的內容策略顧問。鬼磕頭是一位同時具備代書與靈性服務背景的內容創作者，內容聚焦台灣靈性、民俗禁忌、驅邪、收驚、招財等主題，語氣鐵口直斷、務實、不誇大，擅長用專業角度拆解常見迷信與習俗。
 
-你的任務：使用網路搜尋工具，找出目前台灣網路上（Threads、Dcard、新聞、命理媒體、社群等）與「靈性 / 民俗 / 驅邪 / 招財」相關的熱門話題與趨勢，然後產出 5 到 8 個適合鬼磕頭發揮的內容主題。
+你的任務：使用網路搜尋工具，找出目前台灣網路上與「靈性 / 民俗 / 驅邪 / 招財」相關的熱門話題與趨勢，來源包括：
+- Threads、Dcard、新聞、命理媒體、一般社群討論
+- 其他宮廟、靈性工作者、同業 KOL 在社群（例如 IG）上發布的儀式/觀點內容，這類內容適合作為「同業評論型」主題的素材
+
+然後產出 5 到 8 個適合鬼磕頭發揮的內容主題。
 
 輸出規則：
 - 只能輸出一個 JSON 陣列，不要有任何其他文字、說明或 markdown code fence。
 - 陣列中每個物件必須包含以下欄位：
   - "title": 字串，繁體中文標題
-  - "type": 字串，必須是 "explosive"（爆發型）、"trust"（信任型）或 "crossover"（身份交叉）其中之一
+  - "type": 字串，必須是 "explosive"（爆發型）、"trust"（信任型）、"crossover"（身份交叉）或 "commentary"（同業評論型，針對其他宮廟/靈性工作者/KOL發布內容的專業回應與差異化觀點）其中之一
   - "why": 字串，說明這個主題為什麼現在熱門（盡量引用你搜尋到的具體依據）
   - "angle": 字串，建議鬼磕頭應該怎麼切入這個主題
   - "tags": 字串陣列，2 到 4 個簡短標籤
@@ -190,7 +159,9 @@ async function main() {
   const client = new Anthropic({ apiKey });
 
   const html = fs.readFileSync(HTML_PATH, "utf8");
-  const { topics: existingTopics, blockStart, blockEnd } = extractTopicsBlock(html);
+  const topicsBlock = extractArrayBlock(html, "topics");
+  if (!topicsBlock) throw new Error("Could not find `const topics = ` in topic-board.html");
+  const existingTopics = topicsBlock.value;
   const existingTitles = existingTopics.map((t) => t.title);
 
   const newTopicsRaw = await generateTopics(client, existingTitles);
@@ -209,9 +180,7 @@ async function main() {
   }));
 
   const mergedTopics = [...existingTopics, ...newTopics];
-  const arrayLiteral = JSON.stringify(mergedTopics, null, 2);
-  const newHtml =
-    html.slice(0, blockStart) + `const topics = ${arrayLiteral};` + html.slice(blockEnd);
+  const newHtml = replaceArrayBlock(html, "topics", mergedTopics, topicsBlock);
   fs.writeFileSync(HTML_PATH, newHtml);
 
   writeState({ lastRunDate: new Date().toISOString().slice(0, 10) });

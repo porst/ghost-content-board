@@ -94,6 +94,7 @@
   .badge-explosive { background: #4a2020; color: #ff8a8a; }
   .badge-trust { background: #1e3a2e; color: #8affb0; }
   .badge-crossover { background: #2e2a4a; color: #b0a8ff; }
+  .badge-commentary { background: #3a2e14; color: #f0c987; }
 
   .status-select {
     background: #0f0f12;
@@ -158,6 +159,39 @@
     padding: 40px 20px;
     font-size: 13px;
   }
+
+  .feedback-section {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #3a3a40;
+  }
+  .feedback-item {
+    background: #14141a;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 6px;
+  }
+  .feedback-meta {
+    font-size: 10px;
+    color: #8a8680;
+    margin-bottom: 3px;
+  }
+  .feedback-text {
+    font-size: 12px;
+    color: #d0cdc8;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .unsorted-block {
+    margin-top: 24px;
+  }
+  .unsorted-header {
+    font-size: 14px;
+    font-weight: bold;
+    color: #f0c987;
+    margin-bottom: 10px;
+  }
 </style>
 </head>
 <body>
@@ -170,6 +204,8 @@
 <div class="filter-bar" id="filterBar"></div>
 
 <div id="cardList"></div>
+
+<div id="unsortedSection"></div>
 
 <script>
 const topics = [
@@ -986,11 +1022,74 @@ const topics = [
         "a": "對一個扛著『沒人拜的公媽』又不知從何開始的人，你會給他一個什麼樣的第一步建議，讓民俗和法律都不留後患？"
       }
     ]
+  },
+  {
+    "id": 26,
+    "title": "行天宮發布的收驚/掩魂儀式，跟我的做法有什麼不同？",
+    "type": "commentary",
+    "typeLabel": "同業評論型",
+    "why": "行天宮在IG發布掩魂儀式內容，屬於大眾熟悉的宮廟帳號，鬼老師對此有獨到見解，這類同業/KOL內容評論話題性高",
+    "angle": "不批評對方，從專業角度提出自己的判斷與差異化觀點",
+    "tags": [
+      "同業評論",
+      "行天宮",
+      "掩魂儀式",
+      "差異化"
+    ],
+    "status": "pending",
+    "script": [
+      {
+        "q": "開場問題",
+        "a": "行天宮最近發布的掩魂儀式，你看了之後有什麼想法？"
+      },
+      {
+        "q": "追問方向1",
+        "a": "從你的角度來看，你的做法跟他們公開的儀式，核心邏輯上最大的差異是什麼？"
+      },
+      {
+        "q": "追問方向2",
+        "a": "一般人如果看到不同宮廟、不同老師教的方式不一樣，要怎麼分辨哪個才是對的？"
+      },
+      {
+        "q": "收尾引導",
+        "a": "如果今天是你來處理掩魂/收驚這件事，你會怎麼做？"
+      }
+    ]
   }
 ];
 
+// Free-form group feedback not tagged to any specific topic (via the LINE
+// webhook — see api/line-webhook.js). Each entry: { text, sender, time }.
+const unsorted = [];
+
 let currentFilter = "all";
 let scriptShown = {};
+
+// Feedback text/sender come from LINE group messages — untrusted external
+// input — so they must be escaped before landing in innerHTML.
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function formatFeedbackTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso || "";
+  return d.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
+}
+
+function renderFeedbackItems(list) {
+  return list.map(f => `
+    <div class="feedback-item">
+      <div class="feedback-meta">${escapeHtml(f.sender || "")} · ${formatFeedbackTime(f.time)}</div>
+      <div class="feedback-text">${escapeHtml(f.text || "")}</div>
+    </div>
+  `).join("");
+}
 
 function render() {
   const filtered = currentFilter === "all" ? topics : topics.filter(t => t.type === currentFilter);
@@ -1015,11 +1114,22 @@ function render() {
     { key: "all", label: "全部" },
     { key: "explosive", label: "爆發型" },
     { key: "trust", label: "信任型" },
-    { key: "crossover", label: "身份交叉" }
+    { key: "crossover", label: "身份交叉" },
+    { key: "commentary", label: "同業評論型" }
   ];
   document.getElementById("filterBar").innerHTML = filters.map(f =>
     `<button class="filter-btn ${currentFilter === f.key ? 'active' : ''}" onclick="setFilter('${f.key}')">${f.label}</button>`
   ).join("");
+
+  // unsorted discussion (not filtered by topic type)
+  document.getElementById("unsortedSection").innerHTML = `
+    <div class="unsorted-block">
+      <div class="unsorted-header">💬 未分類討論 (${unsorted.length})</div>
+      ${unsorted.length === 0
+        ? `<div class="empty-state">目前沒有未分類的討論訊息</div>`
+        : renderFeedbackItems(unsorted)}
+    </div>
+  `;
 
   // cards
   if (filtered.length === 0) {
@@ -1028,8 +1138,9 @@ function render() {
   }
 
   document.getElementById("cardList").innerHTML = filtered.map(t => {
-    const badgeClass = t.type === "explosive" ? "badge-explosive" : t.type === "trust" ? "badge-trust" : "badge-crossover";
+    const badgeClass = t.type === "explosive" ? "badge-explosive" : t.type === "trust" ? "badge-trust" : t.type === "crossover" ? "badge-crossover" : "badge-commentary";
     const isShown = scriptShown[t.id];
+    const feedback = t.feedback || [];
     return `
     <div class="card">
       <div class="card-header">
@@ -1068,6 +1179,13 @@ function render() {
           </div>
         `).join("")}
       </div>
+
+      ${feedback.length > 0 ? `
+      <div class="card-section feedback-section">
+        <div class="card-label">意見回饋 (${feedback.length})</div>
+        ${renderFeedbackItems(feedback)}
+      </div>
+      ` : ""}
     </div>
   `;
   }).join("");
