@@ -32,7 +32,46 @@ const REPO_OWNER = "porst";
 const REPO_NAME = "ghost-content-board";
 const REPO_BRANCH = "main";
 const FILE_PATH = "topic-board.html";
-const MAX_COMMIT_ATTEMPTS = 3;
+// Kept low deliberately: worst case is 1 profile lookup + MAX_COMMIT_ATTEMPTS
+// * (1 GET + 1 PUT), and FEEDBACK_DEADLINE_MS below is the hard backstop
+// regardless — this just keeps a single stuck fetch from eating the whole
+// per-event processing budget before that backstop even has a chance to fire.
+const MAX_COMMIT_ATTEMPTS = 2;
+const FETCH_TIMEOUT_MS = 8000;
+// Vercel's Edge Function limit observed in production is 25s. Everything
+// from receiving the message to committing feedback must fit well under
+// that so we can still return "OK" ourselves instead of the platform
+// force-killing the invocation (which would also make LINE re-deliver the
+// webhook, redoing any partial work).
+const FEEDBACK_DEADLINE_MS = 18000;
+
+// Every outbound call goes through this so a stalled request (network
+// weirdness, a provider hiccup) fails fast instead of silently eating the
+// function's execution budget — that's what previously turned an ordinary
+// slow response into a full FUNCTION_INVOCATION_TIMEOUT.
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error(`Request to ${url} timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function withDeadline(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms deadline`)), ms),
+    ),
+  ]);
+}
 
 async function hmacSha256Base64(secret, message) {
   const enc = new TextEncoder();
@@ -57,7 +96,7 @@ function timingSafeEqual(a, b) {
 }
 
 async function replyText(accessToken, replyToken, text) {
-  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
+  const res = await fetchWithTimeout("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -75,14 +114,15 @@ async function replyText(accessToken, replyToken, text) {
 
 async function getGroupMemberDisplayName(accessToken, groupId, userId) {
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://api.line.me/v2/bot/group/${groupId}/member/${userId}`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
     );
     if (!res.ok) return userId;
     const data = await res.json();
     return data.displayName || userId;
-  } catch {
+  } catch (err) {
+    console.error("getGroupMemberDisplayName failed, falling back to userId:", err.message);
     return userId;
   }
 }
@@ -105,7 +145,7 @@ function utf8ToBase64(str) {
 }
 
 async function fetchBoardFile(githubToken) {
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${FILE_PATH}?ref=${REPO_BRANCH}`,
     {
       headers: {
@@ -122,7 +162,7 @@ async function fetchBoardFile(githubToken) {
 }
 
 async function putBoardFile(githubToken, html, sha, message) {
-  return fetch(
+  return fetchWithTimeout(
     `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${FILE_PATH}`,
     {
       method: "PUT",
@@ -152,7 +192,9 @@ async function putBoardFile(githubToken, html, sha, message) {
 async function appendFeedback(githubToken, { topicId, feedbackEntry }) {
   let lastError;
   for (let attempt = 1; attempt <= MAX_COMMIT_ATTEMPTS; attempt++) {
+    console.log(`appendFeedback: attempt ${attempt}, fetching current topic-board.html...`);
     const { html, sha } = await fetchBoardFile(githubToken);
+    console.log(`appendFeedback: fetched (sha=${sha}), locating target block...`);
 
     let updatedHtml = null;
     let commitMessage = "";
@@ -180,9 +222,14 @@ async function appendFeedback(githubToken, { topicId, feedbackEntry }) {
           : "LINE feedback: append to unsorted discussion";
     }
 
+    console.log(`appendFeedback: committing (${commitMessage})...`);
     const putRes = await putBoardFile(githubToken, updatedHtml, sha, commitMessage);
-    if (putRes.ok) return;
+    if (putRes.ok) {
+      console.log("appendFeedback: commit succeeded.");
+      return;
+    }
     if (putRes.status === 409 && attempt < MAX_COMMIT_ATTEMPTS) {
+      console.log("appendFeedback: 409 conflict, retrying with fresh sha...");
       lastError = new Error("stale sha, retrying");
       continue;
     }
@@ -196,11 +243,14 @@ async function handleFeedbackMessage(event, { channelAccessToken, githubToken })
   const text = event.message.text;
   const match = text.match(/#(\d+)/);
   const topicId = match ? Number(match[1]) : null;
+  console.log(`handleFeedbackMessage: parsed topicId=${topicId} from "${text}"`);
 
+  console.log("handleFeedbackMessage: resolving sender display name...");
   const sender =
     groupId && userId
       ? await getGroupMemberDisplayName(channelAccessToken, groupId, userId)
       : userId || "未知使用者";
+  console.log(`handleFeedbackMessage: sender resolved to "${sender}"`);
 
   const feedbackEntry = {
     text,
@@ -212,6 +262,7 @@ async function handleFeedbackMessage(event, { channelAccessToken, githubToken })
 }
 
 export default async function handler(request) {
+  console.log("webhook: request received");
   if (request.method !== "POST") {
     return new Response("Not found", { status: 404 });
   }
@@ -225,7 +276,9 @@ export default async function handler(request) {
     return new Response("Server not configured", { status: 500 });
   }
 
+  console.log("webhook: reading request body...");
   const rawBody = await request.text();
+  console.log(`webhook: body read (${rawBody.length} bytes), verifying signature...`);
   const signature = request.headers.get("x-line-signature") || "";
   const expected = await hmacSha256Base64(channelSecret, rawBody);
 
@@ -233,12 +286,14 @@ export default async function handler(request) {
     console.error("Signature verification failed — check LINE_CHANNEL_SECRET.");
     return new Response("Invalid signature", { status: 401 });
   }
+  console.log("webhook: signature OK");
 
   let body;
   try {
     body = JSON.parse(rawBody);
   } catch {
     // LINE's webhook-verify test can send a non-JSON/empty body — still 200.
+    console.log("webhook: body was not JSON (likely the console's Verify ping) — 200 OK");
     return new Response("OK", { status: 200 });
   }
 
@@ -254,8 +309,14 @@ export default async function handler(request) {
       if (!githubToken) {
         console.error("Missing GITHUB_PAT env var — cannot record feedback.");
       } else {
+        console.log("webhook: entering feedback handling (deadline", FEEDBACK_DEADLINE_MS, "ms)...");
         try {
-          await handleFeedbackMessage(event, { channelAccessToken, githubToken });
+          await withDeadline(
+            handleFeedbackMessage(event, { channelAccessToken, githubToken }),
+            FEEDBACK_DEADLINE_MS,
+            "handleFeedbackMessage",
+          );
+          console.log("webhook: feedback handling finished.");
         } catch (err) {
           console.error("Failed to record feedback:", err);
         }
@@ -267,5 +328,6 @@ export default async function handler(request) {
     }
   }
 
+  console.log("webhook: done, returning 200");
   return new Response("OK", { status: 200 });
 }
