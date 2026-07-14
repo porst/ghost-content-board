@@ -1,0 +1,164 @@
+// Vercel Edge Function: regenerates a topic's 訪談大綱 (interview script)
+// using Claude, taking the topic's accumulated LINE feedback into account.
+// Called directly from topic-board.html's "根據回饋重新生成" button.
+//
+// Never overwrites — the new script is pushed as a new entry in
+// topic.scriptVersions (see lib/script-versions.mjs) and committed to
+// topic-board.html via the GitHub Contents API.
+//
+// Env vars required: ANTHROPIC_API_KEY, GITHUB_PAT, BOARD_EDIT_TOKEN.
+import Anthropic from "@anthropic-ai/sdk";
+import { extractArrayBlock } from "../lib/board.mjs";
+import { fetchBoardFile } from "../lib/github-content.mjs";
+import { commitTopicsUpdate } from "../lib/commit-with-retry.mjs";
+import { pushScriptVersion } from "../lib/script-versions.mjs";
+import { checkRequestAuth, jsonResponse } from "../lib/api-helpers.mjs";
+
+export const config = { runtime: "edge" };
+
+const REQUIRED_SCRIPT_FIELDS = ["q", "a"];
+const COMMITTER = {
+  name: "ai-script-regen-bot",
+  email: "ai-script-regen-bot@users.noreply.github.com",
+};
+
+function stripCodeFence(text) {
+  const trimmed = text.trim();
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  return fenceMatch ? fenceMatch[1] : trimmed;
+}
+
+function buildPrompt(topic) {
+  const feedbackList = (topic.feedback || []).length
+    ? topic.feedback.map((f, i) => `${i + 1}. [${f.sender}] ${f.text}`).join("\n")
+    : "（目前尚無回饋）";
+
+  const system = `你是「鬼磕頭」的內容策略顧問。鬼磕頭是一位同時具備代書與靈性服務背景的內容創作者，內容聚焦台灣靈性、民俗禁忌、驅邪、收驚、招財等主題，語氣鐵口直斷、務實、不誇大，擅長用專業角度拆解常見迷信與習俗。
+
+你的任務：根據這個主題的原始資料，以及觀眾在 LINE 群組留下的實際回饋，重新設計一版訪談大綱，讓切角更貼近觀眾真正在意或質疑的點，而不是重複原本的內容。
+
+輸出規則：
+- 只能輸出一個 JSON 陣列，不要有任何其他文字、說明或 markdown code fence。
+- 陣列必須剛好包含 4 個物件，依序對應：
+  - {"q": "開場問題", "a": 字串}
+  - {"q": "追問方向1", "a": 字串}
+  - {"q": "追問方向2", "a": 字串}
+  - {"q": "收尾引導", "a": 字串}`;
+
+  const user = `主題標題：${topic.title}
+為什麼現在熱：${topic.why}
+建議切角：${topic.angle}
+
+觀眾在 LINE 群組留下的回饋：
+${feedbackList}
+
+請根據以上資訊，重新產生一版訪談大綱。`;
+
+  return { system, user };
+}
+
+async function generateScript(client, topic) {
+  const { system, user } = buildPrompt(topic);
+
+  const response = await client.messages.create(
+    {
+      model: "claude-opus-4-8",
+      max_tokens: 2000,
+      system,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "medium" },
+      messages: [{ role: "user", content: user }],
+    },
+    { timeout: 20000 },
+  );
+
+  if (response.stop_reason === "refusal") {
+    throw new Error("Claude declined the request (stop_reason: refusal).");
+  }
+
+  const textBlock = response.content.find((b) => b.type === "text");
+  if (!textBlock) throw new Error("No text content in Claude's response.");
+
+  const raw = stripCodeFence(textBlock.text);
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Failed to parse JSON from Claude's response: ${err.message}`);
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 4) {
+    throw new Error("Claude did not return exactly 4 script items.");
+  }
+  for (const item of parsed) {
+    const missing = REQUIRED_SCRIPT_FIELDS.filter((f) => !(f in item));
+    if (missing.length) throw new Error(`Script item missing fields: ${missing.join(", ")}`);
+  }
+  return parsed;
+}
+
+export default async function handler(request) {
+  const githubToken = process.env.GITHUB_PAT;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const boardToken = process.env.BOARD_EDIT_TOKEN;
+
+  const authResponse = checkRequestAuth(request, {
+    GITHUB_PAT: githubToken,
+    ANTHROPIC_API_KEY: anthropicKey,
+    BOARD_EDIT_TOKEN: boardToken,
+  });
+  if (authResponse) return authResponse;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  }
+
+  const topicId = Number(body.topicId);
+  if (!Number.isInteger(topicId)) {
+    return jsonResponse({ error: "topicId is required" }, 400);
+  }
+
+  // 1. Read the topic's current data to build the prompt from.
+  let topicSnapshot;
+  try {
+    const { html } = await fetchBoardFile(githubToken);
+    const topicsBlock = extractArrayBlock(html, "topics");
+    if (!topicsBlock) throw new Error("`const topics = ` not found in topic-board.html");
+    topicSnapshot = topicsBlock.value.find((t) => t.id === topicId);
+    if (!topicSnapshot) return jsonResponse({ error: `Topic #${topicId} not found` }, 404);
+  } catch (err) {
+    console.error("regenerate-script: failed to read board:", err);
+    return jsonResponse({ error: String(err.message || err) }, 500);
+  }
+
+  // 2. Generate the new script.
+  let newScript;
+  try {
+    const client = new Anthropic({ apiKey: anthropicKey });
+    newScript = await generateScript(client, topicSnapshot);
+  } catch (err) {
+    console.error("regenerate-script: Claude generation failed:", err);
+    return jsonResponse({ error: String(err.message || err) }, 500);
+  }
+
+  // 3. Commit as a new version. Re-reads fresh content (so this doesn't
+  //    clobber a concurrent feedback message or edit); retries once on a
+  //    sha conflict.
+  let updatedTopic;
+  try {
+    const topics = await commitTopicsUpdate(githubToken, COMMITTER, (topics) => {
+      const topic = topics.find((t) => t.id === topicId);
+      if (!topic) throw new Error(`Topic #${topicId} disappeared before commit`);
+      pushScriptVersion(topic, { script: newScript, source: "ai" });
+      return `AI regenerate script for topic #${topicId}`;
+    });
+    updatedTopic = topics.find((t) => t.id === topicId);
+  } catch (err) {
+    console.error("regenerate-script: commit failed:", err);
+    return jsonResponse({ error: String(err.message || err) }, 500);
+  }
+
+  return jsonResponse({ topic: updatedTopic });
+}

@@ -2,5 +2,8 @@
   "name": "ghost-content-board-automation",
   "private": true,
   "type": "module",
-  "description": "Scheduled generator for topic-board.html topics"
+  "description": "Scheduled generator for topic-board.html topics",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0"
+  }
 }

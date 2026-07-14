@@ -167,6 +167,81 @@
   .script-item { margin-bottom: 8px; }
   .script-q { color: #f0c987; font-size: 12px; font-weight: bold; }
   .script-a { color: #c8c4bf; font-size: 12px; margin-top: 2px; }
+  .script-edit-textarea {
+    width: 100%;
+    background: #0f0f12;
+    border: 1px solid #3a3a40;
+    color: #e8e6e3;
+    font-size: 12px;
+    font-family: inherit;
+    padding: 6px 8px;
+    border-radius: 6px;
+    margin-top: 4px;
+    resize: vertical;
+    min-height: 44px;
+  }
+
+  .script-actions {
+    display: flex;
+    gap: 14px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .action-btn {
+    background: none;
+    border: none;
+    color: #f0c987;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 0;
+  }
+  .action-btn:disabled {
+    color: #6a6660;
+    cursor: default;
+  }
+  .save-btn {
+    background: #f0c987;
+    color: #0f0f12;
+    border: none;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .save-btn:disabled {
+    background: #6a6660;
+    cursor: default;
+  }
+  .cancel-btn {
+    background: none;
+    border: 1px solid #3a3a40;
+    color: #b0aca6;
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .history-box {
+    display: none;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #3a3a40;
+  }
+  .history-box.show { display: block; }
+  .history-version {
+    background: #14141a;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 8px;
+  }
+  .history-version-label {
+    font-size: 11px;
+    color: #8a8680;
+    margin-bottom: 6px;
+    font-weight: bold;
+  }
 
   .empty-state {
     text-align: center;
@@ -1084,8 +1159,143 @@ const topics = [
 // webhook — see api/line-webhook.js). Each entry: { text, sender, time }.
 const unsorted = [];
 
+// Base URL of the Vercel deployment that serves the LINE webhook and the
+// AI-regenerate / manual-edit endpoints below. Replace with your actual
+// Vercel project URL before deploying (Vercel dashboard -> project -> the
+// "Domains" entry, e.g. "https://ghost-content-board.vercel.app").
+const API_BASE = "https://YOUR-VERCEL-PROJECT.vercel.app";
+
 let currentFilter = "all";
 let scriptShown = {};
+let historyShown = {};
+let regeneratingId = null;
+let editingId = null;
+let editDraft = null; // array of the 4 edited "a" strings, index-aligned with topic.script
+let savingEdit = false;
+
+// This page has no login — anyone who finds the URL can view it, so the
+// regenerate/edit endpoints are protected by a shared secret instead of
+// real auth. Prompted once, then remembered in this browser via
+// localStorage. Not real security (see api/api-helpers.mjs comment) but
+// stops casual/accidental hits against an endpoint that costs money
+// (Claude) and can rewrite repo content.
+function getBoardToken() {
+  let token = localStorage.getItem("boardEditToken");
+  if (!token) {
+    token = window.prompt("請輸入編輯密碼：") || "";
+    if (token) localStorage.setItem("boardEditToken", token);
+  }
+  return token;
+}
+
+function clearBoardToken() {
+  localStorage.removeItem("boardEditToken");
+}
+
+function sourceLabel(source) {
+  if (source === "ai") return "（AI 重新生成）";
+  if (source === "manual") return "（手動編輯）";
+  return "";
+}
+
+async function regenerateScript(id) {
+  if (regeneratingId) return;
+  const token = getBoardToken();
+  if (!token) return;
+
+  regeneratingId = id;
+  render();
+
+  try {
+    const res = await fetch(`${API_BASE}/api/regenerate-script`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Board-Token": token },
+      body: JSON.stringify({ topicId: id }),
+    });
+    if (res.status === 401) {
+      clearBoardToken();
+      alert("密碼錯誤，請重新輸入後再試一次。");
+      return;
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      alert("重新生成失敗：" + (data.error || res.status));
+      return;
+    }
+    const idx = topics.findIndex(t => t.id === id);
+    if (idx !== -1) topics[idx] = data.topic;
+  } catch (err) {
+    alert("重新生成失敗：" + err.message);
+  } finally {
+    regeneratingId = null;
+    render();
+  }
+}
+
+function startEdit(id) {
+  const t = topics.find(x => x.id === id);
+  if (!t) return;
+  editingId = id;
+  editDraft = t.script.map(s => s.a);
+  render();
+}
+
+function cancelEdit() {
+  editingId = null;
+  editDraft = null;
+  render();
+}
+
+// Deliberately does NOT call render() — re-rendering the whole card list on
+// every keystroke would wipe the textarea's focus/cursor position.
+function updateDraft(index, value) {
+  if (editDraft) editDraft[index] = value;
+}
+
+async function saveEdit(id) {
+  if (savingEdit) return;
+  const token = getBoardToken();
+  if (!token) return;
+
+  const t = topics.find(x => x.id === id);
+  if (!t || !editDraft) return;
+  const newScript = t.script.map((s, i) => ({ q: s.q, a: editDraft[i] }));
+
+  savingEdit = true;
+  render();
+
+  try {
+    const res = await fetch(`${API_BASE}/api/update-script`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Board-Token": token },
+      body: JSON.stringify({ topicId: id, script: newScript }),
+    });
+    if (res.status === 401) {
+      clearBoardToken();
+      alert("密碼錯誤，請重新輸入後再試一次。");
+      return;
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      alert("儲存失敗：" + (data.error || res.status));
+      return;
+    }
+    const idx = topics.findIndex(x => x.id === id);
+    if (idx !== -1) topics[idx] = data.topic;
+    editingId = null;
+    editDraft = null;
+  } catch (err) {
+    alert("儲存失敗：" + err.message);
+  } finally {
+    savingEdit = false;
+    render();
+  }
+}
+
+function toggleHistory(id) {
+  historyShown[id] = !historyShown[id];
+  render();
+}
 
 // Feedback text/sender come from LINE group messages — untrusted external
 // input — so they must be escaped before landing in innerHTML.
@@ -1169,6 +1379,10 @@ function render() {
     const isShown = scriptShown[t.id];
     const feedback = t.feedback || [];
     const isArchived = t.status === "archived";
+    const isEditingThis = editingId === t.id;
+    const isRegeneratingThis = regeneratingId === t.id;
+    const versions = t.scriptVersions || [];
+    const isHistoryShown = historyShown[t.id];
     return `
     <div class="card ${isArchived ? 'archived' : ''}">
       <div class="card-header">
@@ -1204,12 +1418,46 @@ function render() {
       <button class="expand-btn" onclick="toggleScript(${t.id})">${isShown ? '收起訪談大綱 ▲' : '展開訪談大綱 ▼'}</button>
 
       <div class="script-box ${isShown ? 'show' : ''}">
-        ${t.script.map(s => `
-          <div class="script-item">
-            <div class="script-q">${s.q}</div>
-            <div class="script-a">${s.a}</div>
+        ${isEditingThis ? `
+          ${t.script.map((s, i) => `
+            <div class="script-item">
+              <div class="script-q">${escapeHtml(s.q)}</div>
+              <textarea class="script-edit-textarea" oninput="updateDraft(${i}, this.value)">${escapeHtml(editDraft[i])}</textarea>
+            </div>
+          `).join("")}
+          <div class="script-actions">
+            <button class="save-btn" onclick="saveEdit(${t.id})" ${savingEdit ? "disabled" : ""}>${savingEdit ? "儲存中…" : "儲存"}</button>
+            <button class="cancel-btn" onclick="cancelEdit()" ${savingEdit ? "disabled" : ""}>取消</button>
           </div>
-        `).join("")}
+        ` : `
+          ${t.script.map(s => `
+            <div class="script-item">
+              <div class="script-q">${escapeHtml(s.q)}</div>
+              <div class="script-a">${escapeHtml(s.a)}</div>
+            </div>
+          `).join("")}
+          <div class="script-actions">
+            <button class="action-btn" onclick="startEdit(${t.id})">✏️ 編輯</button>
+            <button class="action-btn" onclick="regenerateScript(${t.id})" ${isRegeneratingThis ? "disabled" : ""}>${isRegeneratingThis ? "生成中…" : "🔄 根據回饋重新生成"}</button>
+          </div>
+        `}
+
+        ${versions.length > 1 ? `
+          <button class="expand-btn" onclick="toggleHistory(${t.id})">${isHistoryShown ? '收起版本歷史 ▲' : `查看版本歷史 (${versions.length}) ▼`}</button>
+          <div class="history-box ${isHistoryShown ? 'show' : ''}">
+            ${versions.slice().reverse().map(v => `
+              <div class="history-version">
+                <div class="history-version-label">${escapeHtml(v.label)}${sourceLabel(v.source)}${v.createdAt ? ' · ' + formatFeedbackTime(v.createdAt) : ''}</div>
+                ${v.script.map(s => `
+                  <div class="script-item">
+                    <div class="script-q">${escapeHtml(s.q)}</div>
+                    <div class="script-a">${escapeHtml(s.a)}</div>
+                  </div>
+                `).join("")}
+              </div>
+            `).join("")}
+          </div>
+        ` : ""}
       </div>
 
       ${feedback.length > 0 ? `
