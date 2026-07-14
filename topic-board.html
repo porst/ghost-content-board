@@ -71,12 +71,27 @@
     padding: 16px;
     margin-bottom: 12px;
   }
+  .card.archived {
+    opacity: 0.55;
+  }
   .card-header {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
     gap: 10px;
     margin-bottom: 8px;
+  }
+  .card-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex: 1;
+  }
+  .card-id {
+    font-size: 13px;
+    font-weight: bold;
+    color: #f0c987;
+    white-space: nowrap;
   }
   .card-title {
     font-size: 15px;
@@ -1092,7 +1107,11 @@ function renderFeedbackItems(list) {
 }
 
 function render() {
-  const filtered = currentFilter === "all" ? topics : topics.filter(t => t.type === currentFilter);
+  const filtered = currentFilter === "all"
+    ? topics.filter(t => t.status !== "archived")
+    : currentFilter === "archived"
+      ? topics.filter(t => t.status === "archived")
+      : topics.filter(t => t.type === currentFilter && t.status !== "archived");
 
   // stats
   const total = topics.length;
@@ -1115,7 +1134,8 @@ function render() {
     { key: "explosive", label: "爆發型" },
     { key: "trust", label: "信任型" },
     { key: "crossover", label: "身份交叉" },
-    { key: "commentary", label: "同業評論型" }
+    { key: "commentary", label: "同業評論型" },
+    { key: "archived", label: "已封存" }
   ];
   document.getElementById("filterBar").innerHTML = filters.map(f =>
     `<button class="filter-btn ${currentFilter === f.key ? 'active' : ''}" onclick="setFilter('${f.key}')">${f.label}</button>`
@@ -1141,10 +1161,14 @@ function render() {
     const badgeClass = t.type === "explosive" ? "badge-explosive" : t.type === "trust" ? "badge-trust" : t.type === "crossover" ? "badge-crossover" : "badge-commentary";
     const isShown = scriptShown[t.id];
     const feedback = t.feedback || [];
+    const isArchived = t.status === "archived";
     return `
-    <div class="card">
+    <div class="card ${isArchived ? 'archived' : ''}">
       <div class="card-header">
-        <div class="card-title">${t.title}</div>
+        <div class="card-title-row">
+          <span class="card-id">#${t.id}</span>
+          <div class="card-title">${t.title}</div>
+        </div>
         <span class="badge ${badgeClass}">${t.typeLabel}</span>
       </div>
 
@@ -1167,6 +1191,7 @@ function render() {
         <option value="selected" ${t.status === "selected" ? "selected" : ""}>已選定</option>
         <option value="shot" ${t.status === "shot" ? "selected" : ""}>已拍攝</option>
         <option value="posted" ${t.status === "posted" ? "selected" : ""}>已發布</option>
+        <option value="archived" ${t.status === "archived" ? "selected" : ""}>已封存</option>
       </select>
 
       <button class="expand-btn" onclick="toggleScript(${t.id})">${isShown ? '收起訪談大綱 ▲' : '展開訪談大綱 ▼'}</button>
