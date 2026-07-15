@@ -104,7 +104,12 @@ async function generateScript(client, topic) {
       output_config: { effort: "medium" },
       messages: [{ role: "user", content: user }],
     },
-    { timeout: 20000 },
+    // Adaptive thinking + a "medium" effort budget can comfortably take
+    // longer than 20s, which is what caused APIConnectionTimeoutError in
+    // production. Keep this comfortably under vercel.json's maxDuration (60s)
+    // for this function, so the SDK's own error surfaces before Vercel kills
+    // the invocation outright.
+    { timeout: 55000 },
   );
 
   if (response.stop_reason === "refusal") {
