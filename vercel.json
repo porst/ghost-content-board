@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/regenerate-script.js": {
+      "maxDuration": 60
+    }
+  }
+}

@@ -1252,6 +1252,20 @@ function clearBoardToken() {
   localStorage.removeItem("boardEditToken");
 }
 
+// A plain fetch() never resolves/rejects on a stalled connection, which is
+// what left the "正在產生"/"儲存中" buttons stuck forever with no error
+// shown — the try/catch/finally below was never reached. This bounds every
+// request so the UI always recovers.
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function sourceLabel(source) {
   if (source === "ai") return "（AI 重新生成）";
   if (source === "manual") return "（手動編輯）";
@@ -1267,11 +1281,14 @@ async function regenerateScript(id) {
   render();
 
   try {
-    const res = await fetch(`${API_BASE}/api/regenerate-script`, {
+    // 65s: comfortably above api/regenerate-script.js's own 55s Claude
+    // timeout plus the Vercel maxDuration (60s), so a real backend timeout
+    // error surfaces before this client-side abort would otherwise fire.
+    const res = await fetchWithTimeout(`${API_BASE}/api/regenerate-script`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Board-Token": token },
       body: JSON.stringify({ topicId: id }),
-    });
+    }, 65000);
     if (res.status === 401) {
       clearBoardToken();
       alert("密碼錯誤，請重新輸入後再試一次。");
@@ -1285,7 +1302,7 @@ async function regenerateScript(id) {
     const idx = topics.findIndex(t => t.id === id);
     if (idx !== -1) topics[idx] = data.topic;
   } catch (err) {
-    alert("重新生成失敗：" + err.message);
+    alert(err.name === "AbortError" ? "重新生成逾時，請稍後再試一次。" : "重新生成失敗：" + err.message);
   } finally {
     regeneratingId = null;
     render();
@@ -1325,11 +1342,14 @@ async function saveEdit(id) {
   render();
 
   try {
-    const res = await fetch(`${API_BASE}/api/update-script`, {
+    // update-script.js is a plain Edge Function with no Claude call, so it
+    // should never legitimately take long — a much shorter timeout than
+    // regenerate's is enough here.
+    const res = await fetchWithTimeout(`${API_BASE}/api/update-script`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Board-Token": token },
       body: JSON.stringify({ topicId: id, script: newScript }),
-    });
+    }, 20000);
     if (res.status === 401) {
       clearBoardToken();
       alert("密碼錯誤，請重新輸入後再試一次。");
@@ -1345,7 +1365,7 @@ async function saveEdit(id) {
     editingId = null;
     editDraft = null;
   } catch (err) {
-    alert("儲存失敗：" + err.message);
+    alert(err.name === "AbortError" ? "儲存逾時，請稍後再試一次。" : "儲存失敗：" + err.message);
   } finally {
     savingEdit = false;
     render();
