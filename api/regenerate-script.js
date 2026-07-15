@@ -1,10 +1,23 @@
-// Vercel Edge Function: regenerates a topic's 訪談大綱 (interview script)
-// using Claude, taking the topic's accumulated LINE feedback into account.
-// Called directly from topic-board.html's "根據回饋重新生成" button.
+// Vercel Node.js Serverless Function (NOT Edge) — regenerates a topic's
+// 訪談大綱 (interview script) using Claude, taking the topic's accumulated
+// LINE feedback into account. Called directly from topic-board.html's
+// "根據回饋重新生成" button.
 //
-// Never overwrites — the new script is pushed as a new entry in
-// topic.scriptVersions (see lib/script-versions.mjs) and committed to
-// topic-board.html via the GitHub Contents API.
+// This deliberately does NOT set `export const config = { runtime: "edge" }`
+// (Node.js is the default when that's omitted). @anthropic-ai/sdk pulls in
+// node:fs / node:path internally, which the Edge Runtime's V8 isolate
+// doesn't support at all -- deploying this on Edge failed with "The Edge
+// Function ... is referencing unsupported modules: @anthropic-ai: node:fs,
+// node:path". Node.js's runtime has full support for those, so this is the
+// fix, rather than dropping the official SDK for raw HTTP (the other two
+// Edge Functions in this project, api/line-webhook.js and
+// api/update-script.js, don't touch the SDK and stay on Edge).
+//
+// Node.js Functions use the classic (req, res) handler shape, not the Web
+// Fetch API Request/Response used by the Edge Functions elsewhere in this
+// project -- hence the local corsHeaders/sendJson helpers below instead of
+// lib/api-helpers.mjs (which is Request/Response-shaped and still used by
+// update-script.js).
 //
 // Env vars required: ANTHROPIC_API_KEY, GITHUB_PAT, BOARD_EDIT_TOKEN.
 import Anthropic from "@anthropic-ai/sdk";
@@ -12,15 +25,37 @@ import { extractArrayBlock } from "../lib/board.mjs";
 import { fetchBoardFile } from "../lib/github-content.mjs";
 import { commitTopicsUpdate } from "../lib/commit-with-retry.mjs";
 import { pushScriptVersion } from "../lib/script-versions.mjs";
-import { checkRequestAuth, jsonResponse } from "../lib/api-helpers.mjs";
-
-export const config = { runtime: "edge" };
+import { ALLOWED_ORIGIN } from "../lib/api-helpers.mjs";
 
 const REQUIRED_SCRIPT_FIELDS = ["q", "a"];
 const COMMITTER = {
   name: "ai-script-regen-bot",
   email: "ai-script-regen-bot@users.noreply.github.com",
 };
+
+function setCorsHeaders(res) {
+  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Board-Token");
+}
+
+function sendJson(res, status, body) {
+  res.status(status).json(body);
+}
+
+// @vercel/node auto-parses req.body for a JSON content-type, but guard
+// against it arriving as a raw string (or missing) anyway.
+function parseBody(req) {
+  if (req.body == null) return null;
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return null;
+    }
+  }
+  return req.body;
+}
 
 function stripCodeFence(text) {
   const trimmed = text.trim();
@@ -96,28 +131,37 @@ async function generateScript(client, topic) {
   return parsed;
 }
 
-export default async function handler(request) {
+export default async function handler(req, res) {
+  setCorsHeaders(res);
+
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
+  }
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
   const githubToken = process.env.GITHUB_PAT;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const boardToken = process.env.BOARD_EDIT_TOKEN;
-
-  const authResponse = checkRequestAuth(request, {
-    GITHUB_PAT: githubToken,
-    ANTHROPIC_API_KEY: anthropicKey,
-    BOARD_EDIT_TOKEN: boardToken,
-  });
-  if (authResponse) return authResponse;
-
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, 400);
+  if (!githubToken || !anthropicKey || !boardToken) {
+    console.error("Missing GITHUB_PAT, ANTHROPIC_API_KEY, or BOARD_EDIT_TOKEN env var.");
+    sendJson(res, 500, { error: "Server not configured" });
+    return;
   }
 
-  const topicId = Number(body.topicId);
+  if (req.headers["x-board-token"] !== boardToken) {
+    sendJson(res, 401, { error: "Unauthorized" });
+    return;
+  }
+
+  const body = parseBody(req);
+  const topicId = Number(body?.topicId);
   if (!Number.isInteger(topicId)) {
-    return jsonResponse({ error: "topicId is required" }, 400);
+    sendJson(res, 400, { error: "topicId is required" });
+    return;
   }
 
   // 1. Read the topic's current data to build the prompt from.
@@ -127,10 +171,14 @@ export default async function handler(request) {
     const topicsBlock = extractArrayBlock(html, "topics");
     if (!topicsBlock) throw new Error("`const topics = ` not found in topic-board.html");
     topicSnapshot = topicsBlock.value.find((t) => t.id === topicId);
-    if (!topicSnapshot) return jsonResponse({ error: `Topic #${topicId} not found` }, 404);
+    if (!topicSnapshot) {
+      sendJson(res, 404, { error: `Topic #${topicId} not found` });
+      return;
+    }
   } catch (err) {
     console.error("regenerate-script: failed to read board:", err);
-    return jsonResponse({ error: String(err.message || err) }, 500);
+    sendJson(res, 500, { error: String(err.message || err) });
+    return;
   }
 
   // 2. Generate the new script.
@@ -140,7 +188,8 @@ export default async function handler(request) {
     newScript = await generateScript(client, topicSnapshot);
   } catch (err) {
     console.error("regenerate-script: Claude generation failed:", err);
-    return jsonResponse({ error: String(err.message || err) }, 500);
+    sendJson(res, 500, { error: String(err.message || err) });
+    return;
   }
 
   // 3. Commit as a new version. Re-reads fresh content (so this doesn't
@@ -157,8 +206,9 @@ export default async function handler(request) {
     updatedTopic = topics.find((t) => t.id === topicId);
   } catch (err) {
     console.error("regenerate-script: commit failed:", err);
-    return jsonResponse({ error: String(err.message || err) }, 500);
+    sendJson(res, 500, { error: String(err.message || err) });
+    return;
   }
 
-  return jsonResponse({ topic: updatedTopic });
+  sendJson(res, 200, { topic: updatedTopic });
 }
