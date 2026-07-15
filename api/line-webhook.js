@@ -25,44 +25,21 @@
 // so signature verification uses SubtleCrypto and base64 (de)coding uses
 // atob/btoa + TextEncoder/TextDecoder.
 import { extractArrayBlock, replaceArrayBlock } from "../lib/board.mjs";
+import { fetchWithTimeout, fetchBoardFile, putBoardFile } from "../lib/github-content.mjs";
 
 export const config = { runtime: "edge" };
 
-const REPO_OWNER = "porst";
-const REPO_NAME = "ghost-content-board";
-const REPO_BRANCH = "main";
-const FILE_PATH = "topic-board.html";
 // Kept low deliberately: worst case is 1 profile lookup + MAX_COMMIT_ATTEMPTS
 // * (1 GET + 1 PUT), and FEEDBACK_DEADLINE_MS below is the hard backstop
 // regardless — this just keeps a single stuck fetch from eating the whole
 // per-event processing budget before that backstop even has a chance to fire.
 const MAX_COMMIT_ATTEMPTS = 2;
-const FETCH_TIMEOUT_MS = 8000;
 // Vercel's Edge Function limit observed in production is 25s. Everything
 // from receiving the message to committing feedback must fit well under
 // that so we can still return "OK" ourselves instead of the platform
 // force-killing the invocation (which would also make LINE re-deliver the
 // webhook, redoing any partial work).
 const FEEDBACK_DEADLINE_MS = 18000;
-
-// Every outbound call goes through this so a stalled request (network
-// weirdness, a provider hiccup) fails fast instead of silently eating the
-// function's execution budget — that's what previously turned an ordinary
-// slow response into a full FUNCTION_INVOCATION_TIMEOUT.
-async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } catch (err) {
-    if (err.name === "AbortError") {
-      throw new Error(`Request to ${url} timed out after ${timeoutMs}ms`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 function withDeadline(promise, ms, label) {
   return Promise.race([
@@ -127,63 +104,10 @@ async function getGroupMemberDisplayName(accessToken, groupId, userId) {
   }
 }
 
-// GitHub's Contents API returns file content as base64 of the raw UTF-8
-// bytes — plain atob() would mangle the Traditional Chinese text (it treats
-// each decoded byte as a Latin-1 code point). Route through TextDecoder /
-// TextEncoder instead.
-function base64ToUtf8(base64) {
-  const binary = atob(base64.replace(/\n/g, ""));
-  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  return new TextDecoder("utf-8").decode(bytes);
-}
-
-function utf8ToBase64(str) {
-  const bytes = new TextEncoder().encode(str);
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary);
-}
-
-async function fetchBoardFile(githubToken) {
-  const res = await fetchWithTimeout(
-    `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${FILE_PATH}?ref=${REPO_BRANCH}`,
-    {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-      },
-    },
-  );
-  if (!res.ok) {
-    throw new Error(`GitHub fetch failed: ${res.status} ${await res.text()}`);
-  }
-  const data = await res.json();
-  return { html: base64ToUtf8(data.content), sha: data.sha };
-}
-
-async function putBoardFile(githubToken, html, sha, message) {
-  return fetchWithTimeout(
-    `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${FILE_PATH}`,
-    {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        message,
-        content: utf8ToBase64(html),
-        sha,
-        branch: REPO_BRANCH,
-        committer: {
-          name: "line-feedback-bot",
-          email: "line-feedback-bot@users.noreply.github.com",
-        },
-      }),
-    },
-  );
-}
+const FEEDBACK_COMMITTER = {
+  name: "line-feedback-bot",
+  email: "line-feedback-bot@users.noreply.github.com",
+};
 
 // Appends feedbackEntry to topic `topicId`'s feedback array, or to the
 // top-level `unsorted` array if topicId is null or doesn't match any topic.
@@ -223,7 +147,7 @@ async function appendFeedback(githubToken, { topicId, feedbackEntry }) {
     }
 
     console.log(`appendFeedback: committing (${commitMessage})...`);
-    const putRes = await putBoardFile(githubToken, updatedHtml, sha, commitMessage);
+    const putRes = await putBoardFile(githubToken, updatedHtml, sha, commitMessage, FEEDBACK_COMMITTER);
     if (putRes.ok) {
       console.log("appendFeedback: commit succeeded.");
       return;
