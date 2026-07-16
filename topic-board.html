@@ -1344,7 +1344,13 @@ const topics = [
 
 // Free-form group feedback not tagged to any specific topic (via the LINE
 // webhook — see api/line-webhook.js). Each entry: { text, sender, time }.
-const unsorted = [];
+const unsorted = [
+  {
+    "text": "＃16 能除鬼當然也易招鬼，事物都是一體兩面的，只是不會操作的人，只知其一 不知其二",
+    "sender": "U83159ac658d56172effb96a1b3af084f",
+    "time": "2026-07-16T02:52:48.556Z"
+  }
+];
 
 // Base URL of the Vercel deployment that serves the LINE webhook and the
 // AI-regenerate / manual-edit endpoints below.
