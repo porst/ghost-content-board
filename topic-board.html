@@ -1915,8 +1915,13 @@ const unsorted = [
 // specific filming session (e.g. "行天宮外景場"). A topic joins a batch only
 // when explicitly assigned (topic.batchId), so the existing pending/selected
 // workflow is untouched until someone opts a card into a batch. Persisted the
-// same way `topics` is: committed to this file's own `const batches = [...]`
-// literal via the save-board-state endpoint below, not held only in memory.
+// same way the topics list is (see below): committed via the save-board-state
+// endpoint, not held only in memory.
+//
+// NOTE: lib/board.mjs's extractArrayBlock locates this declaration with a
+// plain text search for the five tokens "const", "batches", "=" in sequence
+// right before an opening bracket — never spell that sequence out above this
+// line (e.g. in a comment), or extraction will latch onto the wrong spot.
 const batches = [];
 
 // Base URL of the Vercel deployment that serves the LINE webhook and the
