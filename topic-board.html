@@ -282,6 +282,88 @@
     color: #f0c987;
     margin-bottom: 10px;
   }
+
+  .batch-section {
+    margin-bottom: 16px;
+  }
+  .batch-header {
+    font-size: 12px;
+    color: #8a8680;
+    margin-bottom: 8px;
+  }
+  .batch-bar {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .batch-btn {
+    background: #1a1a1f;
+    border: 1px solid #2a2a30;
+    color: #b0aca6;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .batch-btn.active {
+    background: #7ec8e3;
+    color: #0f0f12;
+    border-color: #7ec8e3;
+    font-weight: bold;
+  }
+  .batch-add-btn {
+    background: none;
+    border: 1px dashed #3a3a40;
+    color: #8a8680;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .card-controls {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .control-label {
+    font-size: 10px;
+    color: #6a6660;
+  }
+  .card-controls .status-select {
+    margin-top: 0;
+  }
+
+  .save-bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #14141a;
+    border: 1px solid #2a2a30;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+  }
+  .save-bar-inner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .save-status {
+    font-size: 12px;
+    color: #8a8680;
+  }
+  .save-status.dirty {
+    color: #f0c987;
+  }
 </style>
 </head>
 <body>
@@ -289,9 +371,16 @@
 <h1>🔮 鬼磕頭內容主題管理板</h1>
 <div class="subtitle">研究驅動的內容主題庫，不追熱點、追長效好奇心</div>
 
+<div class="save-bar" id="saveBar"></div>
+
 <div class="stats" id="statsRow"></div>
 
 <div class="filter-bar" id="filterBar"></div>
+
+<div class="batch-section">
+  <div class="batch-header">🎬 拍攝梯次（點擊梯次名稱只看這個梯次的卡片）</div>
+  <div class="batch-bar" id="batchBar"></div>
+</div>
 
 <div id="cardList"></div>
 
@@ -1822,6 +1911,14 @@ const unsorted = [
   }
 ];
 
+// Shooting batches ("拍攝梯次") — user-created groupings of topics for a
+// specific filming session (e.g. "行天宮外景場"). A topic joins a batch only
+// when explicitly assigned (topic.batchId), so the existing pending/selected
+// workflow is untouched until someone opts a card into a batch. Persisted the
+// same way `topics` is: committed to this file's own `const batches = [...]`
+// literal via the save-board-state endpoint below, not held only in memory.
+const batches = [];
+
 // Base URL of the Vercel deployment that serves the LINE webhook and the
 // AI-regenerate / manual-edit endpoints below.
 const API_BASE = "https://ghost-content-board.vercel.app";
@@ -1830,6 +1927,14 @@ let currentFilter = "all";
 let scriptShown = {};
 let historyShown = {};
 let regeneratingId = null;
+
+// Status/batch edits (updateStatus/updateBatch/createBatch below) only touch
+// the in-memory `topics`/`batches` arrays — nothing is written back until the
+// "儲存變更" button explicitly calls saveBoardChanges(), so several cards can
+// be adjusted in one pass before a single commit.
+let boardDirty = false;
+let savingBoard = false;
+let lastSavedAt = null;
 let editingId = null;
 let editDraft = null; // array of the 4 edited "a" strings, index-aligned with topic.script
 let savingEdit = false;
@@ -2004,12 +2109,35 @@ function renderFeedbackItems(list) {
   `).join("");
 }
 
+function createBatch() {
+  const name = window.prompt("請輸入新梯次名稱（例如：行天宮外景場）：");
+  if (!name || !name.trim()) return;
+  const id = batches.length ? Math.max(...batches.map(b => b.id)) + 1 : 1;
+  batches.push({ id, name: name.trim() });
+  boardDirty = true;
+  render();
+}
+
+function updateBatch(id, value) {
+  const t = topics.find(x => x.id === id);
+  if (!t) return;
+  t.batchId = value === "" ? null : Number(value);
+  boardDirty = true;
+  render();
+}
+
 function render() {
-  const filtered = currentFilter === "all"
-    ? topics.filter(t => t.status !== "archived")
-    : currentFilter === "archived"
-      ? topics.filter(t => t.status === "archived")
-      : topics.filter(t => t.type === currentFilter && t.status !== "archived");
+  const batchMatch = typeof currentFilter === "string" && currentFilter.startsWith("batch:")
+    ? Number(currentFilter.slice(6))
+    : null;
+
+  const filtered = batchMatch !== null
+    ? topics.filter(t => t.batchId === batchMatch && t.status !== "archived")
+    : currentFilter === "all"
+      ? topics.filter(t => t.status !== "archived")
+      : currentFilter === "archived"
+        ? topics.filter(t => t.status === "archived")
+        : topics.filter(t => t.type === currentFilter && t.status !== "archived");
 
   // stats
   const total = topics.length;
@@ -2017,6 +2145,21 @@ function render() {
   const selected = topics.filter(t => t.status === "selected").length;
   const shot = topics.filter(t => t.status === "shot").length;
   const posted = topics.filter(t => t.status === "posted").length;
+
+  // save bar
+  const saveStatusText = savingBoard
+    ? "正在寫回 GitHub…"
+    : boardDirty
+      ? "有尚未儲存的變更"
+      : lastSavedAt
+        ? `已儲存（${formatFeedbackTime(lastSavedAt)}）`
+        : "沒有待儲存的變更";
+  document.getElementById("saveBar").innerHTML = `
+    <div class="save-bar-inner">
+      <button class="save-btn" onclick="saveBoardChanges()" ${(!boardDirty || savingBoard) ? "disabled" : ""}>${savingBoard ? "儲存中…" : "💾 儲存變更"}</button>
+      <span class="save-status ${boardDirty ? "dirty" : ""}">${saveStatusText}</span>
+    </div>
+  `;
 
   document.getElementById("statsRow").innerHTML = `
     <div class="stat-box"><div class="stat-num">${total}</div><div class="stat-label">總主題數</div></div>
@@ -2038,6 +2181,16 @@ function render() {
   document.getElementById("filterBar").innerHTML = filters.map(f =>
     `<button class="filter-btn ${currentFilter === f.key ? 'active' : ''}" onclick="setFilter('${f.key}')">${f.label}</button>`
   ).join("");
+
+  // batch bar
+  document.getElementById("batchBar").innerHTML = `
+    ${batches.map(b => {
+      const count = topics.filter(t => t.batchId === b.id && t.status !== "archived").length;
+      const key = `batch:${b.id}`;
+      return `<button class="batch-btn ${currentFilter === key ? 'active' : ''}" onclick="setFilter('${key}')">${escapeHtml(b.name)} (${count})</button>`;
+    }).join("")}
+    <button class="batch-add-btn" onclick="createBatch()">+ 新增梯次</button>
+  `;
 
   // unsorted discussion (not filtered by topic type)
   document.getElementById("unsortedSection").innerHTML = `
@@ -2088,13 +2241,25 @@ function render() {
         ${t.tags.map(tag => `<span class="tag">${tag}</span>`).join("")}
       </div>
 
-      <select class="status-select" onchange="updateStatus(${t.id}, this.value)">
-        <option value="pending" ${t.status === "pending" ? "selected" : ""}>待選</option>
-        <option value="selected" ${t.status === "selected" ? "selected" : ""}>已選定</option>
-        <option value="shot" ${t.status === "shot" ? "selected" : ""}>已拍攝</option>
-        <option value="posted" ${t.status === "posted" ? "selected" : ""}>已發布</option>
-        <option value="archived" ${t.status === "archived" ? "selected" : ""}>已封存</option>
-      </select>
+      <div class="card-controls">
+        <div class="control-group">
+          <span class="control-label">狀態</span>
+          <select class="status-select" onchange="updateStatus(${t.id}, this.value)">
+            <option value="pending" ${t.status === "pending" ? "selected" : ""}>待選</option>
+            <option value="selected" ${t.status === "selected" ? "selected" : ""}>已選定</option>
+            <option value="shot" ${t.status === "shot" ? "selected" : ""}>已拍攝</option>
+            <option value="posted" ${t.status === "posted" ? "selected" : ""}>已發布</option>
+            <option value="archived" ${t.status === "archived" ? "selected" : ""}>已封存</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <span class="control-label">拍攝梯次</span>
+          <select class="status-select" onchange="updateBatch(${t.id}, this.value)">
+            <option value="" ${t.batchId == null ? "selected" : ""}>（無梯次）</option>
+            ${batches.map(b => `<option value="${b.id}" ${t.batchId === b.id ? "selected" : ""}>${escapeHtml(b.name)}</option>`).join("")}
+          </select>
+        </div>
+      </div>
 
       <button class="expand-btn" onclick="toggleScript(${t.id})">${isShown ? '收起訪談大綱 ▲' : '展開訪談大綱 ▼'}</button>
 
@@ -2159,9 +2324,62 @@ function setFilter(key) {
 
 function updateStatus(id, value) {
   const t = topics.find(x => x.id === id);
-  if (t) t.status = value;
+  if (!t) return;
+  t.status = value;
+  boardDirty = true;
   render();
 }
+
+async function saveBoardChanges() {
+  if (savingBoard || !boardDirty) return;
+  const token = getBoardToken();
+  if (!token) return;
+
+  savingBoard = true;
+  render();
+
+  try {
+    // Plain GitHub Contents API writes, no Claude call — same short timeout
+    // rationale as update-script.js.
+    const res = await fetchWithTimeout(`${API_BASE}/api/save-board-state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Board-Token": token },
+      body: JSON.stringify({
+        topics: topics.map(t => ({ id: t.id, status: t.status, batchId: t.batchId == null ? null : t.batchId })),
+        batches: batches.map(b => ({ id: b.id, name: b.name })),
+      }),
+    }, 20000);
+    if (res.status === 401) {
+      clearBoardToken();
+      alert("密碼錯誤，請重新輸入後再試一次。");
+      return;
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      alert("儲存失敗：" + (data.error || res.status));
+      return;
+    }
+    data.topics.forEach(saved => {
+      const t = topics.find(x => x.id === saved.id);
+      if (t) { t.status = saved.status; t.batchId = saved.batchId; }
+    });
+    batches.length = 0;
+    batches.push(...data.batches);
+    boardDirty = false;
+    lastSavedAt = new Date().toISOString();
+  } catch (err) {
+    alert(err.name === "AbortError" ? "儲存逾時，請稍後再試一次。" : "儲存失敗：" + err.message);
+  } finally {
+    savingBoard = false;
+    render();
+  }
+}
+
+window.addEventListener("beforeunload", (e) => {
+  if (!boardDirty) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 function toggleScript(id) {
   scriptShown[id] = !scriptShown[id];
