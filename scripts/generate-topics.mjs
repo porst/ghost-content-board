@@ -60,8 +60,11 @@ function buildPrompt(existingTitles) {
 
 然後產出 5 到 8 個適合鬼磕頭發揮的內容主題。
 
-輸出規則：
-- 只能輸出一個 JSON 陣列，不要有任何其他文字、說明或 markdown code fence。
+輸出規則（非常重要，請嚴格遵守）：
+- 你的最終回覆整體只能是一個 JSON 陣列本身：第一個字元必須是 \`[\`，最後一個字元必須是 \`]\`。
+- 前面不能加任何過渡句或說明，例如「已蒐集足夠依據，以下輸出主題 JSON」這類句子絕對不要出現。後面也不能加任何結語。
+- 不要使用 markdown code fence（不要用 \`\`\`json 包起來）。
+- 如果你需要跟自己確認資訊蒐集得夠不夠、要不要多搜尋幾輪，這些思考都只能放在 thinking 裡，最終文字回覆只留 JSON 陣列。
 - 陣列中每個物件必須包含以下欄位：
   - "title": 字串，繁體中文標題
   - "type": 字串，必須是 "explosive"（爆發型）、"trust"（信任型）、"crossover"（身份交叉）或 "commentary"（同業評論型，針對其他宮廟/靈性工作者/KOL發布內容的專業回應與差異化觀點）其中之一
@@ -71,7 +74,9 @@ function buildPrompt(existingTitles) {
   - "script": 陣列，剛好 4 個物件，每個物件有 "q"（問題方向的標籤，例如「開場問題」「追問方向1」「追問方向2」「收尾引導」）與 "a"（實際訪談問題文字）
 - 不要包含 "id" 或 "status" 欄位，這些會由系統自動加上。`;
 
-  const user = `今天是 ${today}（台灣）。請搜尋近期台灣靈性/民俗/驅邪/招財相關的熱門話題，並產出 5 到 8 個新的內容主題。${avoidList}`;
+  const user = `今天是 ${today}（台灣）。請搜尋近期台灣靈性/民俗/驅邪/招財相關的熱門話題，並產出 5 到 8 個新的內容主題。${avoidList}
+
+再次提醒：搜尋與思考都完成後，直接輸出 JSON 陣列本身，不要加任何開場白（例如「已蒐集足夠依據」）或結語。`;
 
   return { system, user };
 }
@@ -80,6 +85,43 @@ function stripCodeFence(text) {
   const trimmed = text.trim();
   const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
   return fenceMatch ? fenceMatch[1] : trimmed;
+}
+
+// The prompt asks Claude to output the JSON array and nothing else, but it
+// has occasionally prefaced the array with a stray transition sentence (e.g.
+// "已蒐集足夠依據，以下輸出主題 JSON。"), which makes the overall text fail
+// JSON.parse even though the array itself is well-formed. Rather than
+// discarding an otherwise-good batch of topics over one wayward sentence,
+// locate the first top-level `[...]` block — skipping over string contents
+// so a `]` inside a title/answer doesn't end the scan early — and parse just
+// that. Returns null if no balanced bracket pair is found at all.
+function extractJsonArray(text) {
+  const start = text.indexOf("[");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = null;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      inString = ch;
+      continue;
+    }
+    if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 async function generateTopics(client, existingTitles) {
@@ -116,9 +158,23 @@ async function generateTopics(client, existingTitles) {
   let parsed;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `Failed to parse JSON from Claude's response: ${err.message}\n---\n${raw}`,
+  } catch (firstErr) {
+    const extracted = extractJsonArray(raw);
+    if (!extracted) {
+      throw new Error(
+        `Failed to parse JSON from Claude's response: ${firstErr.message}\n---\n${raw}`,
+      );
+    }
+    try {
+      parsed = JSON.parse(extracted);
+    } catch (secondErr) {
+      throw new Error(
+        `Failed to parse JSON from Claude's response, even after extracting what looked like the array body: ${secondErr.message}\n---\n${raw}`,
+      );
+    }
+    const discarded = (raw.slice(0, raw.indexOf(extracted)) + raw.slice(raw.indexOf(extracted) + extracted.length)).trim();
+    console.warn(
+      `Claude's response had extra text outside the JSON array; recovered by extracting the array and discarding: ${JSON.stringify(discarded)}`,
     );
   }
   if (!Array.isArray(parsed) || parsed.length === 0) {
