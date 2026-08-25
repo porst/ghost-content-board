@@ -97,7 +97,7 @@ async function generateScript(client, topic) {
 
   const response = await client.messages.create(
     {
-      model: "claude-opus-4-8",
+      model: "claude-sonnet-5",
       max_tokens: 2000,
       system,
       thinking: { type: "adaptive" },

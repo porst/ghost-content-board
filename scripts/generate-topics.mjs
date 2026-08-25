@@ -131,7 +131,7 @@ async function generateTopics(client, existingTitles) {
   let finalMessage;
   for (let i = 0; i < 4; i++) {
     const stream = client.messages.stream({
-      model: "claude-opus-4-8",
+      model: "claude-sonnet-5",
       max_tokens: 8000,
       system,
       thinking: { type: "adaptive" },
