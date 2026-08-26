@@ -132,7 +132,15 @@ async function generateTopics(client, existingTitles) {
   for (let i = 0; i < 4; i++) {
     const stream = client.messages.stream({
       model: "claude-sonnet-5",
-      max_tokens: 8000,
+      // Was 8000 — too tight a ceiling once adaptive thinking + web search
+      // + 5-8 detailed topics share the same token budget. That caused
+      // production failures every day since well before this model was
+      // switched to Sonnet: on Opus the output got cut off mid-JSON
+      // (JSON.parse failure), on Sonnet the whole budget was sometimes
+      // spent on thinking/search before any text block was written at all
+      // ("No text content" below). This call already streams, so there's
+      // no HTTP-timeout reason to keep max_tokens low.
+      max_tokens: 64000,
       system,
       thinking: { type: "adaptive" },
       output_config: { effort: "high" },
@@ -151,7 +159,10 @@ async function generateTopics(client, existingTitles) {
 
   const textBlocks = finalMessage.content.filter((b) => b.type === "text");
   if (textBlocks.length === 0) {
-    throw new Error("No text content in Claude's response.");
+    const blockTypes = finalMessage.content.map((b) => b.type).join(", ") || "(empty)";
+    throw new Error(
+      `No text content in Claude's response (stop_reason: ${finalMessage.stop_reason}, content blocks: ${blockTypes}).`,
+    );
   }
   const raw = stripCodeFence(textBlocks[textBlocks.length - 1].text);
 
